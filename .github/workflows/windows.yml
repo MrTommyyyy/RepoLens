@@ -1,0 +1,56 @@
+name: Windows build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: windows-release
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test source
+        run: python -m unittest discover -s tests -v
+      - name: Install packaging tool
+        run: python -m pip install PyInstaller==6.22.0
+      - name: Build Windows executables
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --noupx --console --name RepoLens repolens.py
+      - name: Check bundled command line
+        shell: pwsh
+        run: |
+          $actual = & .\dist\RepoLens.exe --version
+          if ($LASTEXITCODE -ne 0 -or $actual -ne '0.1.0') { throw "Wrong bundled version: $actual" }
+      - name: Test packaged behaviour
+        run: python windows_smoke.py
+      - name: Package portable download
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE, WINDOWS-README.txt -Destination dist
+          Get-ChildItem dist\*.exe | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          Compress-Archive -Path dist\* -DestinationPath RepoLens-0.1.0-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RepoLens-0.1.0-Windows-x64
+          path: RepoLens-0.1.0-Windows-x64.zip
+          if-no-files-found: error
+      - name: Publish tested release downloads
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python package_source.py RepoLens 0.1.0
+          gh release view v0.1.0 --repo ${{ github.repository }} *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release v0.1.0 already exists; preserving published downloads."
+            exit 0
+          }
+          gh release create v0.1.0 RepoLens-0.1.0-Windows-x64.zip RepoLens-0.1.0-Source.zip --repo ${{ github.repository }} --target ${{ github.sha }} --title "RepoLens 0.1.0" --notes-file RELEASE-NOTES.md --latest
+          if ($LASTEXITCODE -ne 0) { throw "Release publication failed" }
